@@ -10,20 +10,18 @@ module.exports = {
     }
 
     const userId = args[0];
-    if (!userId) return message.reply('❌ Please provide the user ID to unban.\nUsage: `!unban 123456789`');
+    if (!userId) return message.reply('❌ Please provide the user ID.\nUsage: `!unban 123456789012345678`');
 
-    // Validate it looks like a Discord ID
     if (!/^\d{17,20}$/.test(userId)) {
-      return message.reply('❌ That does not look like a valid Discord user ID.\nExample: `!unban 123456789012345678`');
+      return message.reply('❌ Invalid Discord user ID.\nExample: `!unban 123456789012345678`');
     }
 
     try {
-      // Fetch ban list and check if user is actually banned
       const bans = await message.guild.bans.fetch();
       const bannedUser = bans.get(userId);
 
       if (!bannedUser) {
-        return message.reply(`❌ User **${userId}** is not in the ban list.`);
+        return message.reply(`❌ User **${userId}** is not banned.`);
       }
 
       await message.guild.members.unban(userId, `Unbanned by ${message.author.tag}`);
@@ -31,10 +29,7 @@ module.exports = {
 
     } catch (err) {
       console.error('Unban error:', err);
-      if (err.code === 10026) {
-        return message.reply('❌ That user is not banned.');
-      }
-      message.reply(`❌ Failed to unban. Make sure the ID is correct.\nError: ${err.message}`);
+      message.reply(`❌ Failed to unban.\nReason: ${err.message}`);
     }
   }
 };
