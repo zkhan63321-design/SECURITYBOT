@@ -3,41 +3,41 @@ const { isWhitelisted } = require('../utils/whitelist');
 
 module.exports = {
   name: 'unban',
-  description: 'Unban a user by username or ID (whitelisted users only)',
+  description: 'Unban a user by mention or username (whitelisted users only)',
   async execute(message, args, client) {
     if (!isWhitelisted(message.author.id)) {
       return message.reply('❌ You are not authorized to use this command.');
     }
 
-    if (!args.length) return message.reply('❌ Please provide a username or user ID.\nUsage: `!unban username` or `!unban 123456789012345678`');
-
-    const query = args.join(' ').toLowerCase().trim();
+    if (!args.length) return message.reply('❌ Usage: `!unban @username` or `!unban username`');
 
     try {
-      // Fetch full ban list
       const bans = await message.guild.bans.fetch();
-
       if (!bans.size) return message.reply('📋 There are no banned users in this server.');
 
       let bannedEntry = null;
 
-      // Check if query is a user ID
-      if (/^\d{17,20}$/.test(query)) {
-        bannedEntry = bans.get(query);
+      // Get username from mention like !unban @username
+      // Mentions of banned users won't resolve normally, so extract from raw text
+      const raw = message.content.slice(message.content.indexOf(' ')).trim();
+      
+      // Remove @ and # symbols to get clean username
+      const cleanQuery = raw.replace(/^@/, '').toLowerCase().trim();
+
+      // Search ban list by username
+      bannedEntry = bans.find(ban =>
+        ban.user.username.toLowerCase() === cleanQuery ||
+        ban.user.tag.toLowerCase() === cleanQuery ||
+        ban.user.username.toLowerCase().includes(cleanQuery)
+      );
+
+      // Also try by ID if it looks like one
+      if (!bannedEntry && /^\d{17,20}$/.test(cleanQuery)) {
+        bannedEntry = bans.get(cleanQuery);
       }
 
-      // If not found by ID, search by username
       if (!bannedEntry) {
-        bannedEntry = bans.find(ban =>
-          ban.user.username.toLowerCase() === query ||
-          ban.user.tag.toLowerCase() === query ||
-          ban.user.displayName?.toLowerCase() === query ||
-          ban.user.username.toLowerCase().includes(query)
-        );
-      }
-
-      if (!bannedEntry) {
-        return message.reply(`❌ Could not find a banned user matching **"${args.join(' ')}"**.\nTry using their exact username or user ID.`);
+        return message.reply(`❌ No banned user found matching **"${raw}"**.\nNote: Type their exact Discord username.`);
       }
 
       await message.guild.members.unban(bannedEntry.user.id, `Unbanned by ${message.author.tag}`);
@@ -45,7 +45,7 @@ module.exports = {
 
     } catch (err) {
       console.error('Unban error:', err);
-      message.reply(`❌ Failed to unban.\nReason: ${err.message}`);
+      message.reply(`❌ Failed to unban. Reason: ${err.message}`);
     }
   }
 };
