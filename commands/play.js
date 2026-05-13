@@ -1,6 +1,4 @@
 // commands/play.js
-// Uses @distube/ytdl-core — actively maintained YouTube fork
-
 const {
   joinVoiceChannel,
   createAudioPlayer,
@@ -12,29 +10,22 @@ const {
 } = require('@discordjs/voice');
 const ytdl = require('@distube/ytdl-core');
 const yts = require('yt-search');
+const prism = require('prism-media');
 
 module.exports = {
   name: 'play',
-  description: 'Play a song in your voice channel. Usage: !play <song name or YouTube URL>',
+  description: 'Play a song in your voice channel.',
   async execute(message, args, client) {
-    if (!args.length) return message.reply('❌ Please provide a song name or YouTube URL.\nExample: `!play Believer Imagine Dragons`');
+    if (!args.length) return message.reply('❌ Usage: `!play <song name or URL>`');
 
     const voiceChannel = message.member.voice.channel;
-    if (!voiceChannel) return message.reply('❌ You must be in a voice channel to play music!');
+    if (!voiceChannel) return message.reply('❌ Join a voice channel first!');
 
-    const permissions = voiceChannel.permissionsFor(message.client.user);
-    if (!permissions.has('Connect') || !permissions.has('Speak')) {
-      return message.reply('❌ I need permission to join and speak in your voice channel!');
-    }
+    const searchMsg = await message.reply('🔍 Searching...');
 
-    const searchMsg = await message.reply('🔍 Searching for your song...');
-
-    let url;
-    let songTitle;
-
+    let url, songTitle;
     try {
       const query = args.join(' ');
-
       if (ytdl.validateURL(query)) {
         url = query;
         const info = await ytdl.getInfo(url);
@@ -47,18 +38,16 @@ module.exports = {
       }
     } catch (err) {
       console.error('Search error:', err);
-      return searchMsg.edit('❌ Could not find that song. Try again.');
+      return searchMsg.edit('❌ Could not find that song.');
     }
 
     const guildId = message.guild.id;
-
     if (!client.musicQueues.has(guildId)) {
       client.musicQueues.set(guildId, { queue: [], player: null, connection: null, playing: false });
     }
 
     const serverQueue = client.musicQueues.get(guildId);
     const song = { title: songTitle, url, requestedBy: message.author.tag };
-
     serverQueue.queue.push(song);
 
     if (serverQueue.playing) {
@@ -71,7 +60,6 @@ module.exports = {
         guildId: message.guild.id,
         adapterCreator: message.guild.voiceAdapterCreator,
       });
-
       serverQueue.connection = connection;
 
       connection.on(VoiceConnectionStatus.Disconnected, async () => {
@@ -87,12 +75,12 @@ module.exports = {
       });
 
       await searchMsg.edit(`✅ Found: **${song.title}** — loading...`);
-      await playNext(guildId, client, message.channel);
+      playNext(guildId, client, message.channel);
 
     } catch (err) {
-      console.error('Voice connection error:', err);
+      console.error('Voice error:', err);
       client.musicQueues.delete(guildId);
-      message.channel.send('❌ Failed to join the voice channel.');
+      message.channel.send('❌ Failed to join voice channel.');
     }
   }
 };
@@ -110,24 +98,38 @@ async function playNext(guildId, client, channel) {
   serverQueue.playing = true;
 
   try {
-    const stream = ytdl(song.url, {
+    // Use ffmpeg transcoder for reliable opus output
+    const ytdlStream = ytdl(song.url, {
       filter: 'audioonly',
-      quality: 'highestaudio',
+      quality: 'lowestaudio',
       highWaterMark: 1 << 25,
       dlChunkSize: 0,
     });
 
-    stream.on('error', (err) => {
-      console.error('Stream error:', err);
+    const transcoder = new prism.FFmpeg({
+      args: [
+        '-analyzeduration', '0',
+        '-loglevel', '0',
+        '-f', 's16le',
+        '-ar', '48000',
+        '-ac', '2',
+      ],
     });
 
+    const opus = new prism.opus.Encoder({
+      rate: 48000,
+      channels: 2,
+      frameSize: 960,
+    });
+
+    const stream = ytdlStream.pipe(transcoder).pipe(opus);
+
     const resource = createAudioResource(stream, {
-      inputType: StreamType.Arbitrary,
+      inputType: StreamType.Opus,
     });
 
     const player = createAudioPlayer();
     serverQueue.player = player;
-
     player.play(resource);
     serverQueue.connection.subscribe(player);
 
@@ -138,11 +140,20 @@ async function playNext(guildId, client, channel) {
     player.once(AudioPlayerStatus.Idle, () => {
       serverQueue.playing = false;
       serverQueue.queue.shift();
+      stream.destroy();
       setTimeout(() => playNext(guildId, client, channel), 500);
     });
 
     player.once('error', (err) => {
       console.error('Player error:', err);
+      serverQueue.playing = false;
+      serverQueue.queue.shift();
+      stream.destroy();
+      setTimeout(() => playNext(guildId, client, channel), 500);
+    });
+
+    stream.on('error', (err) => {
+      console.error('Stream error:', err);
       serverQueue.playing = false;
       serverQueue.queue.shift();
       setTimeout(() => playNext(guildId, client, channel), 500);
