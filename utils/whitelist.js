@@ -1,15 +1,25 @@
 // utils/whitelist.js
-// Manages the whitelist of trusted users who bypass security checks
+const fs = require('fs');
+const path = require('path');
 
-require('dotenv').config();
+const whitelistFile = path.join(__dirname, '../whitelist.json');
 
-// Load whitelist from .env + always include owner
-const getWhitelist = () => {
-  const ids = (process.env.WHITELIST || '').split(',').map(id => id.trim()).filter(Boolean);
-  if (process.env.OWNER_ID) ids.push(process.env.OWNER_ID.trim());
-  return [...new Set(ids)];
-};
+function getWhitelistedIds() {
+  // First try JSON file (set via Discord commands)
+  try {
+    if (fs.existsSync(whitelistFile)) {
+      const ids = JSON.parse(fs.readFileSync(whitelistFile, 'utf8'));
+      if (ids.length) return ids;
+    }
+  } catch {}
 
-const isWhitelisted = (userId) => getWhitelist().includes(userId);
+  // Fall back to .env WHITELIST variable
+  return (process.env.WHITELIST || '').split(',').map(id => id.trim()).filter(Boolean);
+}
 
-module.exports = { isWhitelisted, getWhitelist };
+function isWhitelisted(userId) {
+  if (userId === process.env.OWNER_ID) return true;
+  return getWhitelistedIds().includes(userId);
+}
+
+module.exports = { isWhitelisted };
