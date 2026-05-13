@@ -1,5 +1,5 @@
 // commands/play.js
-// Music command using ytdl-core + @discordjs/voice
+// Uses play-dl (ytdl-core is broken) + opusscript (no native compilation needed)
 
 const {
   joinVoiceChannel,
@@ -9,8 +9,7 @@ const {
   VoiceConnectionStatus,
   entersState,
 } = require('@discordjs/voice');
-const ytdl = require('ytdl-core');
-const yts = require('yt-search');
+const playdl = require('play-dl');
 
 module.exports = {
   name: 'play',
@@ -26,49 +25,44 @@ module.exports = {
       return message.reply('❌ I need permission to join and speak in your voice channel!');
     }
 
-    await message.reply('🔍 Searching for your song...');
+    const searchMsg = await message.reply('🔍 Searching for your song...');
 
-    let url = args[0];
-    let songInfo;
+    let url;
+    let songTitle;
 
     try {
-      // If not a YouTube URL, search for it
-      if (!ytdl.validateURL(url)) {
-        const searchQuery = args.join(' ');
-        const results = await yts(searchQuery);
-        if (!results.videos.length) return message.channel.send('❌ No results found for that search.');
-        url = results.videos[0].url;
-        songInfo = results.videos[0];
+      const query = args.join(' ');
+
+      if (playdl.yt_validate(query) === 'video') {
+        url = query;
+        const info = await playdl.video_info(url);
+        songTitle = info.video_details.title;
       } else {
-        const info = await ytdl.getInfo(url);
-        songInfo = {
-          title: info.videoDetails.title,
-          url: url,
-          duration: { seconds: parseInt(info.videoDetails.lengthSeconds) }
-        };
+        const results = await playdl.search(query, { limit: 1 });
+        if (!results.length) return searchMsg.edit('❌ No results found for that search.');
+        url = results[0].url;
+        songTitle = results[0].title;
       }
     } catch (err) {
       console.error('Music search error:', err);
-      return message.channel.send('❌ Could not find or load that song. Try a different search.');
+      return searchMsg.edit('❌ Could not find or load that song. Try a different search.');
     }
 
     const guildId = message.guild.id;
 
-    // Initialize queue if needed
     if (!client.musicQueues.has(guildId)) {
-      client.musicQueues.set(guildId, { queue: [], player: null, connection: null });
+      client.musicQueues.set(guildId, { queue: [], player: null, connection: null, playing: false });
     }
 
     const serverQueue = client.musicQueues.get(guildId);
-    const song = { title: songInfo.title, url, requestedBy: message.author.tag };
+    const song = { title: songTitle, url, requestedBy: message.author.tag };
 
-    // Add to queue
     serverQueue.queue.push(song);
-    if (serverQueue.queue.length > 1) {
-      return message.channel.send(`✅ **${song.title}** added to queue! Position: #${serverQueue.queue.length}`);
+
+    if (serverQueue.playing) {
+      return searchMsg.edit(`✅ **${song.title}** added to queue! Position: #${serverQueue.queue.length}`);
     }
 
-    // Connect to voice channel
     try {
       const connection = joinVoiceChannel({
         channelId: voiceChannel.id,
@@ -81,8 +75,8 @@ module.exports = {
       connection.on(VoiceConnectionStatus.Disconnected, async () => {
         try {
           await Promise.race([
-            entersState(connection, VoiceConnectionStatus.Signalling, 5000),
-            entersState(connection, VoiceConnectionStatus.Connecting, 5000),
+            entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+            entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
           ]);
         } catch {
           connection.destroy();
@@ -90,6 +84,7 @@ module.exports = {
         }
       });
 
+      await searchMsg.edit(`✅ Found: **${song.title}** — loading...`);
       await playNext(guildId, client, message.channel);
     } catch (err) {
       console.error('Voice connection error:', err);
@@ -111,15 +106,14 @@ async function playNext(guildId, client, channel) {
   }
 
   const song = serverQueue.queue[0];
+  serverQueue.playing = true;
 
   try {
-    const stream = ytdl(song.url, {
-      filter: 'audioonly',
-      quality: 'highestaudio',
-      highWaterMark: 1 << 25,
+    const stream = await playdl.stream(song.url, { quality: 2 });
+    const resource = createAudioResource(stream.stream, {
+      inputType: stream.type,
     });
 
-    const resource = createAudioResource(stream);
     const player = createAudioPlayer();
     serverQueue.player = player;
 
@@ -130,20 +124,24 @@ async function playNext(guildId, client, channel) {
       channel.send(`🎵 Now playing: **${song.title}**\nRequested by: ${song.requestedBy}`).catch(() => {});
     }
 
-    player.on(AudioPlayerStatus.Idle, () => {
+    player.once(AudioPlayerStatus.Idle, () => {
+      serverQueue.playing = false;
       serverQueue.queue.shift();
-      playNext(guildId, client, channel);
+      setTimeout(() => playNext(guildId, client, channel), 500);
     });
 
-    player.on('error', (err) => {
+    player.once('error', (err) => {
       console.error('Audio player error:', err);
+      serverQueue.playing = false;
       serverQueue.queue.shift();
-      playNext(guildId, client, channel);
+      setTimeout(() => playNext(guildId, client, channel), 500);
     });
+
   } catch (err) {
     console.error('Play error:', err);
+    serverQueue.playing = false;
     serverQueue.queue.shift();
-    playNext(guildId, client, channel);
+    setTimeout(() => playNext(guildId, client, channel), 500);
   }
 }
 
