@@ -1,5 +1,5 @@
 // commands/play.js
-// Uses play-dl (ytdl-core is broken) + opusscript (no native compilation needed)
+// Uses @distube/ytdl-core — actively maintained YouTube fork
 
 const {
   joinVoiceChannel,
@@ -8,8 +8,10 @@ const {
   AudioPlayerStatus,
   VoiceConnectionStatus,
   entersState,
+  StreamType,
 } = require('@discordjs/voice');
-const playdl = require('play-dl');
+const ytdl = require('@distube/ytdl-core');
+const yts = require('yt-search');
 
 module.exports = {
   name: 'play',
@@ -33,19 +35,19 @@ module.exports = {
     try {
       const query = args.join(' ');
 
-      if (playdl.yt_validate(query) === 'video') {
+      if (ytdl.validateURL(query)) {
         url = query;
-        const info = await playdl.video_info(url);
-        songTitle = info.video_details.title;
+        const info = await ytdl.getInfo(url);
+        songTitle = info.videoDetails.title;
       } else {
-        const results = await playdl.search(query, { limit: 1 });
-        if (!results.length) return searchMsg.edit('❌ No results found for that search.');
-        url = results[0].url;
-        songTitle = results[0].title;
+        const results = await yts(query);
+        if (!results.videos.length) return searchMsg.edit('❌ No results found.');
+        url = results.videos[0].url;
+        songTitle = results.videos[0].title;
       }
     } catch (err) {
-      console.error('Music search error:', err);
-      return searchMsg.edit('❌ Could not find or load that song. Try a different search.');
+      console.error('Search error:', err);
+      return searchMsg.edit('❌ Could not find that song. Try again.');
     }
 
     const guildId = message.guild.id;
@@ -86,6 +88,7 @@ module.exports = {
 
       await searchMsg.edit(`✅ Found: **${song.title}** — loading...`);
       await playNext(guildId, client, message.channel);
+
     } catch (err) {
       console.error('Voice connection error:', err);
       client.musicQueues.delete(guildId);
@@ -97,9 +100,7 @@ module.exports = {
 async function playNext(guildId, client, channel) {
   const serverQueue = client.musicQueues.get(guildId);
   if (!serverQueue || !serverQueue.queue.length) {
-    if (serverQueue?.connection) {
-      serverQueue.connection.destroy();
-    }
+    if (serverQueue?.connection) serverQueue.connection.destroy();
     client.musicQueues.delete(guildId);
     if (channel) channel.send('✅ Queue finished! Left the voice channel.').catch(() => {});
     return;
@@ -109,9 +110,19 @@ async function playNext(guildId, client, channel) {
   serverQueue.playing = true;
 
   try {
-    const stream = await playdl.stream(song.url, { quality: 2 });
-    const resource = createAudioResource(stream.stream, {
-      inputType: stream.type,
+    const stream = ytdl(song.url, {
+      filter: 'audioonly',
+      quality: 'highestaudio',
+      highWaterMark: 1 << 25,
+      dlChunkSize: 0,
+    });
+
+    stream.on('error', (err) => {
+      console.error('Stream error:', err);
+    });
+
+    const resource = createAudioResource(stream, {
+      inputType: StreamType.Arbitrary,
     });
 
     const player = createAudioPlayer();
@@ -131,7 +142,7 @@ async function playNext(guildId, client, channel) {
     });
 
     player.once('error', (err) => {
-      console.error('Audio player error:', err);
+      console.error('Player error:', err);
       serverQueue.playing = false;
       serverQueue.queue.shift();
       setTimeout(() => playNext(guildId, client, channel), 500);
